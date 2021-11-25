@@ -11,6 +11,8 @@ import com.rabbitmq.client.ConfirmCallback;
 import org.rb.util.RabbitMqUtils;
 
 import java.util.UUID;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 public class ConfirmProducer {
     public static int MESSAGE_COUNT = 800;
@@ -66,16 +68,33 @@ public class ConfirmProducer {
         channel.queueDeclare(queenName,true,false,false,null);
         channel.confirmSelect(); // 开启发布确认
 
+        //方便批量删除 ，通过序号
+        //支持多线程并发
+        ConcurrentSkipListMap<Long,String> confirmMap = new ConcurrentSkipListMap<>();
+
         long start = System.currentTimeMillis();
         //消息成功发送回调函数  deliveryTag  消息标记  multiple 是否批量确认
         ConfirmCallback ackCallback = (deliveryTag, multiple)->{
-              System.out.println("正确确认的消息:"+deliveryTag);
+            //步骤002 删除掉已经被消费的消息
+            if(multiple){
+                //可能会造成消息丢失 一般不用
+                ConcurrentNavigableMap<Long,String> confirmedMap =  confirmMap.headMap(deliveryTag);
+                confirmedMap.clear();
+            }else{
+                //推荐使用这种方式
+                confirmMap.remove(deliveryTag);
+            }
+            System.out.println("正确确认的消息:"+deliveryTag);
+
         };
 
         //消息失败回调函数  deliveryTag  消息标记  multiple 是否批量确认
         ConfirmCallback nackCallback = (deliveryTag, multiple)->{
             //这里获取到未处理成功的消息
-            System.out.println("未确认的消息:"+deliveryTag);
+
+            //步骤003 处理 步骤002 操作完成之后违未被确认的消息
+            String unConfirmMessage = confirmMap.get(deliveryTag);
+            System.out.println("未确认的消息:"+deliveryTag+"内容是:"+unConfirmMessage);
 
         };
 
@@ -84,6 +103,8 @@ public class ConfirmProducer {
         for (int i = 0; i < MESSAGE_COUNT; i++) {
             String message = "msg"+i;
             channel.basicPublish("",queenName,null,message.getBytes());
+            //步骤001 记录下所有的记录
+            confirmMap.put(channel.getNextPublishSeqNo(),message);
         }
         long end = System.currentTimeMillis();
         System.out.println("发布"+MESSAGE_COUNT+"个消息耗时"+(end-start)+"ms");
